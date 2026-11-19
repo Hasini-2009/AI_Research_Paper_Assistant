@@ -34,9 +34,6 @@ def get_gemini_client():
         ),
     )
 
-        ),
-    )
-
 
 # ---------------- PAGE DESIGN ----------------
 
