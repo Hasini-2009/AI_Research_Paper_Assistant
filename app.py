@@ -21,23 +21,24 @@ def get_gemini_client():
     api_key = st.secrets["GEMINI_API_KEY"]
 
     
-        return genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(
-                retry_options=types.HttpRetryOptions(
-                    initial_delay=2.0,
-                    attempts=4,
-                    exp_base=2,
-                    max_delay=10,
-                    http_status_codes=[408, 429, 500, 502, 503, 504],
-                ),
-                timeout=180000,
+    
+@st.cache_resource
+def get_gemini_client():
+    api_key = st.secrets["GEMINI_API_KEY"]
+
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(
+            retry_options=types.HttpRetryOptions(
+                initial_delay=2.0,
+                attempts=4,
+                exp_base=2,
+                max_delay=10,
+                http_status_codes=[408, 429, 500, 502, 503, 504],
             ),
+            timeout=180000,
         )
-
-        ),
     )
-
 
 # ---------------- PAGE DESIGN ----------------
 
