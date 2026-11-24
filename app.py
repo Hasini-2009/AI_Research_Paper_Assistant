@@ -1,7 +1,8 @@
 
 import streamlit as st
-from google import genai
-from google.genai import types
+from groq import Groq
+from pypdf import PdfReader
+import io
 
 # ---------------- PAGE CONFIGURATION ----------------
 
@@ -11,34 +12,23 @@ st.set_page_config(
     layout="wide"
 )
 
-MODEL_NAME = "gemini-3.8-flash"
+MODEL_NAME = "openai/gpt-oss-20b"
 
-# ---------------- GEMINI CONNECTION ----------------
-
+# ---------------- GROQ CONNECTION ----------------
 
 @st.cache_resource
-def get_gemini_client():
-    api_key = st.secrets["GEMINI_API_KEY"]
+def get_groq_client():
+    api_key = st.secrets["GROQ_API_KEY"]
+    return Groq(api_key=api_key, timeout=120.0)
 
-    
-    
-@st.cache_resource
-def get_gemini_client():
-    api_key = st.secrets["GEMINI_API_KEY"]
-
-    return genai.Client(
-        api_key=api_key,
-        http_options=types.HttpOptions(
-            retry_options=types.HttpRetryOptions(
-                initial_delay=2.0,
-                attempts=4,
-                exp_base=2,
-                max_delay=10,
-                http_status_codes=[408, 429, 500, 502, 503, 504],
-            ),
-            timeout=180000,
-        )
+def ask_groq(messages):
+    response = get_groq_client().chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        max_completion_tokens=2048,
+        reasoning_effort="low"
     )
+    return response.choices[0].message.content
 
 # ---------------- PAGE DESIGN ----------------
 
@@ -65,95 +55,133 @@ if uploaded_file is None:
 
 pdf_bytes = uploaded_file.getvalue()
 
-if not pdf_bytes.startswith(b"%PDF"):
-    st.error("The uploaded file does not appear to be a valid PDF.")
-    st.stop()
-
 if len(pdf_bytes) > 20 * 1024 * 1024:
     st.error("Please upload a PDF smaller than 20 MB.")
     st.stop()
 
-st.success(f"PDF uploaded successfully: {uploaded_file.name}")
-
-# ---------------- PREPARE PDF FOR GEMINI ----------------
-
-pdf_part = types.Part.from_bytes(
-    data=pdf_bytes,
-    mime_type="application/pdf"
-)
+# Extract text from PDF
 
 try:
-    client = get_gemini_client()
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+
+    paper_text = "\n\n".join(
+        page.extract_text() or ""
+        for page in reader.pages
+    )
+
 except Exception as e:
-    st.error(f"Gemini connection error: {e}")
+    st.error(f"Could not read the PDF: {e}")
     st.stop()
 
+if not paper_text.strip():
+    st.error(
+        "No readable text was found. "
+        "This PDF may contain scanned images instead of selectable text."
+    )
+    st.stop()
+
+# Keep document within a manageable prompt size
+
+MAX_DOCUMENT_CHARS = 50000
+document_text = paper_text[:MAX_DOCUMENT_CHARS]
+
+st.success(
+    f"PDF uploaded successfully: {uploaded_file.name}"
+)
+
+st.caption(
+    f"Pages: {len(reader.pages)} | "
+    f"Extracted characters: {len(paper_text):,}"
+)
+
+if len(paper_text) > MAX_DOCUMENT_CHARS:
+    st.warning(
+        "This is a long PDF. Only its first 50,000 characters "
+        "will be used in this version."
+    )
 
 # ---------------- SUMMARY SECTION ----------------
 
 st.divider()
-
 st.header("📝 Research Paper Summary")
 
 if st.button("Generate Summary", use_container_width=True):
-    with st.spinner("Gemini is reading your research paper..."):
+
+    with st.spinner("Groq is reading your research paper..."):
+
         try:
-            response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=[
-                    "Read this research paper carefully. "
-                    "Provide a clear summary covering the research "
-                    "topic, objectives, methodology, major findings, "
-                    "conclusion, and limitations. Only report information "
-                    "supported by the paper.",
-                    pdf_part
-                ]
-            )
+            answer = ask_groq([
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a research paper assistant. "
+                        "Use only the supplied research paper. "
+                        "Do not invent information."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Summarize this research paper clearly. "
+                        "Include the topic, objectives, methodology, "
+                        "major findings, conclusion and limitations.\n\n"
+                        + document_text
+                    )
+                }
+            ])
 
             st.subheader("Paper Summary")
-            st.markdown(response.text or "No text response was returned.")
+            st.markdown(answer)
 
         except Exception as e:
-            st.error(f"Could not generate summary: {e}")
-
+            st.error(f"Summary generation failed: {e}")
 
 # ---------------- KEY POINTS SECTION ----------------
 
 st.divider()
-
 st.header("🔑 Important Key Points")
 
 if st.button("Extract Key Points", use_container_width=True):
+
     with st.spinner("Extracting important points..."):
+
         try:
-            response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=[
-                    "Analyze this research paper and extract its "
-                    "10 most important key points. Include important "
-                    "concepts, methodology, findings, and conclusions. "
-                    "Do not invent information.",
-                    pdf_part
-                ]
-            )
+            answer = ask_groq([
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a research assistant. "
+                        "Extract accurate information from the supplied paper. "
+                        "Do not invent facts."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Extract the 10 most important key points "
+                        "from this research paper. Explain each point "
+                        "briefly using clear language.\n\n"
+                        + document_text
+                    )
+                }
+            ])
 
             st.subheader("Key Points to Remember")
-            st.markdown(response.text or "No text response was returned.")
+            st.markdown(answer)
 
         except Exception as e:
-            st.error(f"Could not extract key points: {e}")
-
+            st.error(f"Key point extraction failed: {e}")
 
 # ---------------- CHAT SECTION ----------------
 
 st.divider()
-
 st.header("💬 Chat with Your Research Paper")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 # Display previous conversation
+
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -173,36 +201,31 @@ if question:
         st.markdown(question)
 
     with st.chat_message("assistant"):
-        with st.spinner("Gemini is thinking..."):
+
+        with st.spinner("Groq is thinking..."):
 
             try:
-                # Include recent conversation for context
-                conversation = st.session_state.chat_history[-11:]
+                messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an AI research paper assistant. "
+                            "Answer questions using the supplied paper. "
+                            "If the paper does not contain the answer, "
+                            "clearly say so. Do not invent facts.\n\n"
+                            "RESEARCH PAPER:\n"
+                            + document_text
+                        )
+                    }
+                ]
 
-                chat_prompt = (
-                    "Answer the user's questions using the uploaded "
-                    "research paper as your primary source. "
-                    "If the answer is not available in the paper, "
-                    "clearly say so. Do not invent facts.\n\n"
+                # Include recent conversation
+
+                messages.extend(
+                    st.session_state.chat_history[-10:]
                 )
 
-                for message in conversation:
-                    chat_prompt += (
-                        message["role"].upper()
-                        + ": "
-                        + message["content"]
-                        + "\n"
-                    )
-
-                response = client.models.generate_content(
-                    model=MODEL_NAME,
-                    contents=[
-                        chat_prompt,
-                        pdf_part
-                    ]
-                )
-
-                answer = response.text or "No answer was returned."
+                answer = ask_groq(messages)
 
                 st.markdown(answer)
 
@@ -212,10 +235,10 @@ if question:
                 })
 
             except Exception as e:
-                st.error(f"Gemini could not answer: {e}")
+                st.error(f"Chat response failed: {e}")
 
 st.divider()
 
 st.caption(
-    "Powered by Google Gemini AI | Built with Python and Streamlit"
+    "Powered by Groq AI | Built with Python and Streamlit"
 )
